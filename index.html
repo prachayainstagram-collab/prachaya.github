@@ -16,7 +16,7 @@
 
         // --- GLOBAL VARIABLES (Provided by Canvas) ---
         // DO NOT EDIT these variables. They are automatically provided.
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const appId = '1:129761630136:web:bc814f3c0501a329aca14d';
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
         
         // --- FIREBASE CONFIGURATION ---
@@ -452,7 +452,7 @@
 
         // --- AUTHENTICATION & INITIALIZATION ---
         function handleAdminLogin() {
-            const passwordInput = document.getElementById('adminPassword').value;
+            const passwordInput = document.getElementById('adminPassword').value.trim();
             const loginModal = document.getElementById('adminLoginModal');
             const adminPanel = document.getElementById('adminPanel');
 
