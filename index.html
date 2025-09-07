@@ -19,16 +19,15 @@
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
         
-        // --- FIREBASE CONFIGURATION (Using Environment Variables) ---
-        // This is a secure way to handle secrets on platforms like Vercel
+        // --- FIREBASE CONFIGURATION ---
         const firebaseConfig = {
-            apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-            authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-            projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-            storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-            messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-            appId: import.meta.env.VITE_FIREBASE_APP_ID,
-            measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID
+            apiKey: "AIzaSyCOLD-9V91-0Y7omCnZ7lU5vovwFdgwqkQ",
+            authDomain: "nutzaa-98833.firebaseapp.com",
+            projectId: "nutzaa-98833",
+            storageBucket: "nutzaa-98833.firebasestorage.app",
+            messagingSenderId: "129761630136",
+            appId: "1:129761630136:web:bc814f3c0501a329aca14d",
+            measurementId: "G-NZ4VQ1TW8X"
         };
         
         // --- FIREBASE INITIALIZATION ---
@@ -240,11 +239,6 @@
                 clothesData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                 clothesLoaded = true;
                 checkAllDataLoaded();
-                // renderClothes();
-                // renderResults();
-                // if (isAdminLoggedIn) {
-                //     renderAdminClothes();
-                // }
             }, (error) => {
                 console.error("Error fetching clothes data:", error);
             });
@@ -256,7 +250,6 @@
                     userVote = docSnap.exists() ? docSnap.data().clothesId : null;
                     userVoteLoaded = true;
                     checkAllDataLoaded();
-                    // renderClothes();
                 }, (error) => {
                     console.error("Error fetching user vote:", error);
                 });
@@ -276,13 +269,6 @@
                 settingsLoaded = true;
                 checkAllDataLoaded();
                 updateVotingStatusUI();
-                // renderClothes();
-                // if (isAdminLoggedIn) {
-                //     // Update admin UI with latest settings
-                //     document.getElementById('votingEnabled').checked = votingSettings.enabled || false;
-                //     document.getElementById('startTime').value = votingSettings.startTime || '';
-                //     document.getElementById('endTime').value = votingSettings.endTime || '';
-                // }
             }, (error) => {
                 console.error("Error fetching voting settings:", error);
             });
@@ -498,9 +484,16 @@
                     console.log("User is signed out.");
                     userId = null;
                     userVote = null;
-                    userVoteLoaded = true;
-                    checkAllDataLoaded();
+                    clothesLoaded = false;
+                    settingsLoaded = false;
+                    userVoteLoaded = false;
+                    renderUI(); // Render the UI in a signed-out state
                 }
+                
+                // Once authentication state is known, hide loading screen
+                document.getElementById('loadingScreen').classList.add('hidden');
+                document.getElementById('mainContent').classList.remove('hidden');
+
             });
 
             if (initialAuthToken) {
