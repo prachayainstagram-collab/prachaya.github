@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ระบบโหวตเสื้อผ้า - คณะศึกษาศาสตร์</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module">
+        // Firebase Imports - DO NOT CHANGE THESE URLs
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, doc, addDoc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, runTransaction, query, where, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        setLogLevel('debug'); // Enable Firestore debug logging
+
+        // --- GLOBAL VARIABLES (Provided by Canvas) ---
+        // DO NOT EDIT these variables. They are automatically provided.
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        
+        // --- FIREBASE CONFIGURATION ---
+        const firebaseConfig = {
+            apiKey: "AIzaSyCOLD-9V91-0Y7omCnZ7lU5vovwFdgwqkQ",
+            authDomain: "nutzaa-98833.firebaseapp.com",
+            projectId: "nutzaa-98833",
+            storageBucket: "nutzaa-98833.firebasestorage.app",
+            messagingSenderId: "129761630136",
+            appId: "1:129761630136:web:bc814f3c0501a329aca14d",
+            measurementId: "G-NZ4VQ1TW8X"
+        };
+        
+        // --- FIREBASE INITIALIZATION ---
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const auth = getAuth(app);
+        
+        // --- GLOBAL STATE VARIABLES ---
+        let clothesData = [];
+        let userVote = null; // Stores the clothesId of the item the user has voted for
+        let userId = null;
+        let isAdminLoggedIn = false;
+        const ADMIN_PASSWORD = 'admin123';
+        let votingSettings = {};
+        let votingTimerInterval = null;
+
+        // --- UTILITY FUNCTIONS ---
+        // Creates a human-readable unique user ID for display
+        const generateDisplayUserId = (uid) => {
+            return `user_${uid.substring(0, 4)}`;
+        };
+
+        // Replaces the `confirm()` function with a custom modal
+        function showConfirmModal(message, onConfirm) {
+            const modal = document.getElementById('confirmationModal');
+            const messageElement = document.getElementById('modalMessage');
+            const confirmBtn = document.getElementById('modalConfirmBtn');
+            const cancelBtn = document.getElementById('modalCancelBtn');
+
+            modal.classList.remove('hidden');
+            messageElement.textContent = message;
+
+            const handleConfirm = () => {
+                onConfirm();
+                modal.classList.add('hidden');
+                confirmBtn.removeEventListener('click', handleConfirm);
+                cancelBtn.removeEventListener('click', handleCancel);
+            };
+
+            const handleCancel = () => {
+                modal.classList.add('hidden');
+                confirmBtn.removeEventListener('click', handleConfirm);
+                cancelBtn.removeEventListener('click', handleCancel);
+            };
+
+            confirmBtn.addEventListener('click', handleConfirm);
+            cancelBtn.addEventListener('click', handleCancel);
+        }
+
+        // --- RENDER FUNCTIONS ---
+        function renderClothes() {
+            const grid = document.getElementById('clothesGrid');
+            grid.innerHTML = '';
+            
+            if (clothesData.length === 0) {
+                grid.innerHTML = '<p class="text-gray-500 text-center col-span-full">ยังไม่มีรายการเสื้อผ้า</p>';
+                return;
+            }
+            
+            const isVotingActive = checkVotingActive();
+            const hasUserVoted = userVote !== null;
+
+            clothesData.forEach(clothes => {
+                const card = document.createElement('div');
+                card.className = `vote-card bg-white rounded-xl shadow-lg overflow-hidden transition-all duration-300 ${userVote === clothes.id ? 'ring-2 ring-fuchsia-500' : ''}`;
+                
+                const isButtonDisabled = !isVotingActive || hasUserVoted;
+                const voteButtonState = isButtonDisabled ? 'disabled opacity-50 cursor-not-allowed' : '';
+                const voteButtonText = userVote === clothes.id ? 'โหวตแล้ว' : (isVotingActive ? 'โหวต' : 'หมดเวลา');
+                const voteStatusBadge = userVote === clothes.id ? '<div class="absolute top-2 right-2 bg-fuchsia-500 text-white px-2 py-1 rounded-full text-sm">✓ โหวตแล้ว</div>' : '';
+
+                card.innerHTML = `
+                    <div class="relative">
+                        <img src="${clothes.imageUrl}" alt="${clothes.name}" class="w-full h-64 object-cover" onerror="this.src='https://placehold.co/400x300/e2e8f0/94a3b8?text=รูปภาพไม่พร้อมใช้งาน'; this.alt='รูปภาพไม่สามารถโหลดได้';">
+                        ${voteStatusBadge}
+                    </div>
+                    <div class="p-4">
+                        <h3 class="font-bold text-lg text-gray-800 mb-2">${clothes.name}</h3>
+                        <p class="text-gray-600 text-sm mb-4">${clothes.description || 'ไม่มีรายละเอียด'}</p>
+                        <div class="flex justify-between items-center">
+                            <span class="text-fuchsia-600 font-semibold">👍 ${clothes.votes || 0} โหวต</span>
+                            <button data-id="${clothes.id}" class="vote-btn bg-fuchsia-600 hover:bg-fuchsia-700 text-white px-4 py-2 rounded-lg transition-colors shadow-md ${voteButtonState}" ${isButtonDisabled ? 'disabled' : ''}>
+                                ${voteButtonText}
+                            </button>
+                        </div>
+                    </div>
+                `;
+                grid.appendChild(card);
+            });
+
+            // Attach event listeners for voting buttons
+            grid.querySelectorAll('.vote-btn').forEach(button => {
+                button.addEventListener('click', (e) => {
+                    const clothesId = e.target.dataset.id;
+                    voteForClothes(clothesId);
+                });
+            });
+        }
+
+        function renderResults() {
+            const container = document.getElementById('resultsContainer');
+            if (clothesData.length === 0) {
+                container.innerHTML = '<p class="text-gray-500 text-center">ยังไม่มีข้อมูลการโหวต</p>';
+                return;
+            }
+
+            // Sort clothes data by votes in descending order on the client side
+            const sortedClothes = [...clothesData].sort((a, b) => (b.votes || 0) - (a.votes || 0));
+            container.innerHTML = '';
+            
+            const totalVotes = sortedClothes.reduce((sum, clothes) => sum + (clothes.votes || 0), 0);
+            
+            sortedClothes.forEach((clothes, index) => {
+                const votes = clothes.votes || 0;
+                const percentage = totalVotes > 0 ? (votes / totalVotes * 100).toFixed(1) : 0;
+                
+                const resultItem = document.createElement('div');
+                resultItem.className = 'flex items-center justify-between p-3 border-b border-gray-200 last:border-b-0';
+                
+                let rankColor = 'text-gray-600';
+                if (index === 0) rankColor = 'text-purple-500';
+                else if (index === 1) rankColor = 'text-pink-400';
+                else if (index === 2) rankColor = 'text-fuchsia-500';
+
+                resultItem.innerHTML = `
+                    <div class="flex items-center space-x-3">
+                        <span class="text-lg font-bold ${rankColor}">
+                            ${index + 1}
+                        </span>
+                        <img src="${clothes.imageUrl}" alt="${clothes.name}" class="w-12 h-12 object-cover rounded-lg" onerror="this.style.display='none'">
+                        <div>
+                            <h4 class="font-semibold text-gray-800">${clothes.name}</h4>
+                            <p class="text-sm text-gray-600">${votes} โหวต (${percentage}%)</p>
+                        </div>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                        <div class="w-24 bg-gray-200 rounded-full h-2">
+                            <div class="bg-fuchsia-600 h-2 rounded-full" style="width: ${percentage}%"></div>
+                        </div>
+                        <span class="text-sm font-semibold text-gray-700">${percentage}%</span>
+                    </div>
+                `;
+                container.appendChild(resultItem);
+            });
+        }
+
+        function renderAdminClothes() {
+            const grid = document.getElementById('adminClothesGrid');
+            grid.innerHTML = '';
+
+            if (clothesData.length === 0) {
+                grid.innerHTML = '<p class="text-gray-500 text-center col-span-full">ยังไม่มีรายการเสื้อผ้าที่สามารถจัดการได้</p>';
+                return;
+            }
+
+            clothesData.forEach(clothes => {
+                const adminCard = document.createElement('div');
+                adminCard.className = 'bg-white border border-gray-200 rounded-lg p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between';
+                
+                adminCard.innerHTML = `
+                    <div class="flex items-center space-x-3 mb-4 sm:mb-0">
+                        <img src="${clothes.imageUrl}" alt="${clothes.name}" class="w-16 h-16 object-cover rounded-lg" onerror="this.style.display='none'">
+                        <div class="min-w-0">
+                            <h4 class="font-semibold text-gray-800 truncate">${clothes.name}</h4>
+                            <p class="text-sm text-gray-600">${clothes.votes || 0} โหวต</p>
+                        </div>
+                    </div>
+                    <div class="flex space-x-2">
+                        <button onclick="resetVotes('${clothes.id}')" class="bg-yellow-500 hover:bg-yellow-600 text-white px-3 py-1 rounded-lg text-sm transition-colors whitespace-nowrap">
+                            🔄 รีเซ็ตโหวต
+                        </button>
+                        <button onclick="deleteClothes('${clothes.id}')" class="bg-red-500 hover:bg-red-600 text-white px-3 py-1 rounded-lg text-sm transition-colors whitespace-nowrap">
+                            🗑️ ลบ
+                        </button>
+                    </div>
+                `;
+                grid.appendChild(adminCard);
+            });
+        }
+
+        // --- FIREBASE LISTENERS & DATA MANAGEMENT ---
+        function setupRealtimeListeners() {
+            // Listen for real-time changes to the clothes items
+            const clothesCollectionRef = collection(db, `artifacts/${appId}/public/data/clothes`);
+            onSnapshot(clothesCollectionRef, (snapshot) => {
+                clothesData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                renderClothes();
+                renderResults();
+                if (isAdminLoggedIn) {
+                    renderAdminClothes();
+                }
+            }, (error) => {
+                console.error("Error fetching clothes data:", error);
+            });
+
+            // Listen for real-time changes to the user's single vote
+            if (userId) {
+                const userVoteDocRef = doc(db, 'artifacts', appId, 'users', userId, 'user_data', 'vote_record');
+                onSnapshot(userVoteDocRef, (docSnap) => {
+                    userVote = docSnap.exists() ? docSnap.data().clothesId : null;
+                    renderClothes();
+                }, (error) => {
+                    console.error("Error fetching user vote:", error);
+                });
+            }
+
+            // Listen for real-time changes to voting settings
+            const settingsDocRef = doc(db, `artifacts/${appId}/public/data/settings`, 'voting_period');
+            onSnapshot(settingsDocRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    votingSettings = docSnap.data();
+                } else {
+                    votingSettings = { enabled: false, startTime: '', endTime: '' };
+                }
+                updateVotingStatusUI();
+                renderClothes();
+                if (isAdminLoggedIn) {
+                    // Update admin UI with latest settings
+                    document.getElementById('votingEnabled').checked = votingSettings.enabled || false;
+                    document.getElementById('startTime').value = votingSettings.startTime || '';
+                    document.getElementById('endTime').value = votingSettings.endTime || '';
+                }
+            }, (error) => {
+                console.error("Error fetching voting settings:", error);
+            });
+        }
+
+        // --- USER INTERACTIONS ---
+        function checkVotingActive() {
+            if (!votingSettings.enabled) return false;
+            const now = new Date();
+            const startTime = new Date(votingSettings.startTime);
+            const endTime = new Date(votingSettings.endTime);
+            return now >= startTime && now <= endTime;
+        }
+
+        function updateVotingStatusUI() {
+            const statusDiv = document.getElementById('votingStatusDisplay');
+            if (votingTimerInterval) {
+                clearInterval(votingTimerInterval);
+            }
+        
+            if (!votingSettings.enabled) {
+                statusDiv.innerHTML = '<span class="text-gray-500">🚫 การโหวตถูกปิดใช้งาน</span>';
+                return;
+            }
+        
+            const now = new Date();
+            const startTime = new Date(votingSettings.startTime);
+            const endTime = new Date(votingSettings.endTime);
+        
+            if (now < startTime) {
+                const timeLeft = Math.floor((startTime - now) / 1000);
+                votingTimerInterval = setInterval(() => {
+                    const remaining = Math.max(0, Math.floor((startTime - new Date()) / 1000));
+                    const days = Math.floor(remaining / (3600 * 24));
+                    const hours = Math.floor((remaining % (3600 * 24)) / 3600);
+                    const minutes = Math.floor((remaining % 3600) / 60);
+                    const seconds = remaining % 60;
+                    statusDiv.innerHTML = `<span class="text-pink-600">🕒 การโหวตจะเริ่มใน: ${days} วัน ${hours} ชั่วโมง ${minutes} นาที ${seconds} วินาที</span>`;
+                    if (remaining <= 0) {
+                        clearInterval(votingTimerInterval);
+                        // Re-render to enable buttons immediately
+                        renderClothes();
+                        updateVotingStatusUI();
+                    }
+                }, 1000);
+                statusDiv.innerHTML = `<span class="text-pink-600">🕒 การโหวตจะเริ่มใน...</span>`;
+            } else if (now > endTime) {
+                statusDiv.innerHTML = '<span class="text-red-600">🛑 การโหวตสิ้นสุดแล้ว</span>';
+            } else {
+                const timeLeft = Math.floor((endTime - now) / 1000);
+                votingTimerInterval = setInterval(() => {
+                    const remaining = Math.max(0, Math.floor((endTime - new Date()) / 1000));
+                    const days = Math.floor(remaining / (3600 * 24));
+                    const hours = Math.floor((remaining % (3600 * 24)) / 3600);
+                    const minutes = Math.floor((remaining % 3600) / 60);
+                    const seconds = remaining % 60;
+                    statusDiv.innerHTML = `<span class="text-purple-600">✅ กำลังโหวต: เหลือเวลา ${days} วัน ${hours} ชั่วโมง ${minutes} นาที ${seconds} วินาที</span>`;
+                    if (remaining <= 0) {
+                        clearInterval(votingTimerInterval);
+                        // Re-render to disable buttons immediately
+                        renderClothes();
+                        updateVotingStatusUI();
+                    }
+                }, 1000);
+                statusDiv.innerHTML = `<span class="text-purple-600">✅ กำลังโหวต: เหลือเวลา...</span>`;
+            }
+        }
+
+        async function voteForClothes(clothesId) {
+            if (!checkVotingActive()) {
+                showNotification('ไม่สามารถโหวตได้ในขณะนี้', 'error');
+                return;
+            }
+            if (userVote) {
+                showNotification('คุณได้โหวตเสื้อผ้านี้แล้ว', 'warning');
+                return;
+            }
+
+            try {
+                // Use a transaction to safely update the vote count
+                const clothesRef = doc(db, `artifacts/${appId}/public/data/clothes`, clothesId);
+                await runTransaction(db, async (transaction) => {
+                    const clothesDoc = await transaction.get(clothesRef);
+                    if (!clothesDoc.exists()) {
+                        throw new Error('ไม่พบข้อมูลเสื้อผ้า');
+                    }
+                    const newVotes = (clothesDoc.data().votes || 0) + 1;
+                    transaction.update(clothesRef, { votes: newVotes });
+                });
+
+                // Correcting the path to be a valid document reference with an even number of segments
+                const userVoteDocRef = doc(db, 'artifacts', appId, 'users', userId, 'user_data', 'vote_record');
+                await setDoc(userVoteDocRef, { clothesId: clothesId, votedAt: new Date().toISOString() });
+
+                showNotification('โหวตสำเร็จ! ขอบคุณสำหรับการมีส่วนร่วม', 'success');
+            } catch (error) {
+                console.error('Error voting:', error);
+                showNotification('เกิดข้อผิดพลาดในการโหวต กรุณาลองใหม่', 'error');
+            }
+        }
+
+        async function addNewClothes() {
+            const name = document.getElementById('clothesName').value.trim();
+            const imageUrl = document.getElementById('clothesImage').value.trim();
+            const description = document.getElementById('clothesDescription').value.trim();
+
+            if (!name || !imageUrl) {
+                showNotification('กรุณากรอกชื่อเสื้อผ้าและลิงก์รูปภาพ', 'warning');
+                return;
+            }
+
+            try {
+                const clothesCollectionRef = collection(db, `artifacts/${appId}/public/data/clothes`);
+                await addDoc(clothesCollectionRef, {
+                    name: name,
+                    imageUrl: imageUrl,
+                    description: description,
+                    votes: 0,
+                    createdAt: new Date().toISOString()
+                });
+                
+                document.getElementById('clothesName').value = '';
+                document.getElementById('clothesImage').value = '';
+                document.getElementById('clothesDescription').value = '';
+                showNotification('เพิ่มเสื้อผ้าสำเร็จ!', 'success');
+            } catch (error) {
+                console.error('Error adding clothes:', error);
+                showNotification('เกิดข้อผิดพลาดในการเพิ่มเสื้อผ้า', 'error');
+            }
+        }
+        
+        async function handleSaveSettings() {
+            const enabled = document.getElementById('votingEnabled').checked;
+            const startTime = document.getElementById('startTime').value;
+            const endTime = document.getElementById('endTime').value;
+
+            if (enabled && (!startTime || !endTime)) {
+                showNotification('กรุณาเลือกเวลาเริ่มต้นและสิ้นสุด', 'warning');
+                return;
+            }
+
+            try {
+                const settingsDocRef = doc(db, `artifacts/${appId}/public/data/settings`, 'voting_period');
+                await setDoc(settingsDocRef, {
+                    enabled: enabled,
+                    startTime: startTime,
+                    endTime: endTime
+                });
+                showNotification('บันทึกการตั้งค่าสำเร็จ!', 'success');
+            } catch (error) {
+                console.error('Error saving settings:', error);
+                showNotification('เกิดข้อผิดพลาดในการบันทึกการตั้งค่า', 'error');
+            }
+        }
+
+        async function resetVotes(clothesId) {
+            showConfirmModal('คุณแน่ใจหรือไม่ที่จะรีเซ็ตโหวตของเสื้อผ้านี้?', async () => {
+                try {
+                    const clothesRef = doc(db, `artifacts/${appId}/public/data/clothes`, clothesId);
+                    await updateDoc(clothesRef, { votes: 0 });
+                    showNotification('รีเซ็ตโหวตสำเร็จ', 'success');
+                } catch (error) {
+                    console.error('Error resetting votes:', error);
+                    showNotification('เกิดข้อผิดพลาดในการรีเซ็ตโหวต', 'error');
+                }
+            });
+        }
+
+        async function deleteClothes(clothesId) {
+            showConfirmModal('คุณแน่ใจหรือไม่ที่จะลบเสื้อผ้านี้? การกระทำนี้ไม่สามารถยกเลิกได้', async () => {
+                try {
+                    const clothesRef = doc(db, `artifacts/${appId}/public/data/clothes`, clothesId);
+                    await deleteDoc(clothesRef);
+                    showNotification('ลบเสื้อผ้าสำเร็จ', 'success');
+                } catch (error) {
+                    console.error('Error deleting clothes:', error);
+                    showNotification('เกิดข้อผิดพลาดในการลบเสื้อผ้า', 'error');
+                }
+            });
+        }
+
+        // --- AUTHENTICATION & INITIALIZATION ---
+        function handleAdminLogin() {
+            const passwordInput = document.getElementById('adminPassword').value;
+            const loginModal = document.getElementById('adminLoginModal');
+            const adminPanel = document.getElementById('adminPanel');
+
+            if (passwordInput === ADMIN_PASSWORD) {
+                isAdminLoggedIn = true;
+                loginModal.classList.add('hidden');
+                adminPanel.classList.add('active');
+                renderAdminClothes();
+                showNotification('เข้าสู่ระบบผู้ดูแลสำเร็จ', 'success');
+            } else {
+                showNotification('รหัสผ่านไม่ถูกต้อง', 'error');
+            }
+            document.getElementById('adminPassword').value = ''; // Clear input
+        }
+        
+        function handleAdminLogout() {
+            isAdminLoggedIn = false;
+            document.getElementById('adminPanel').classList.remove('active');
+            showNotification('ออกจากระบบเรียบร้อย', 'info');
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+            onAuthStateChanged(auth, (user) => {
+                if (user) {
+                    userId = user.uid;
+                    document.getElementById('userIdDisplay').textContent = `ผู้ใช้: ${generateDisplayUserId(userId)}`;
+                    setupRealtimeListeners();
+                } else {
+                    console.log("User is signed out.");
+                    document.getElementById('userIdDisplay').textContent = "กำลังเชื่อมต่อ...";
+                }
+            });
+
+            if (initialAuthToken) {
+                signInWithCustomToken(auth, initialAuthToken).catch((error) => {
+                    console.error("Custom token sign-in failed:", error);
+                    signInAnonymously(auth);
+                });
+            } else {
+                signInAnonymously(auth);
+            }
+
+            document.getElementById('adminBtn').addEventListener('click', () => {
+                if (isAdminLoggedIn) {
+                    document.getElementById('adminPanel').classList.toggle('active');
+                    if (document.getElementById('adminPanel').classList.contains('active')) {
+                        renderAdminClothes();
+                    }
+                } else {
+                    document.getElementById('adminLoginModal').classList.remove('hidden');
+                }
+            });
+
+            document.getElementById('addClothesBtn').addEventListener('click', addNewClothes);
+            document.getElementById('adminLoginBtn').addEventListener('click', handleAdminLogin);
+            document.getElementById('adminLogoutBtn').addEventListener('click', handleAdminLogout);
+            document.getElementById('adminLoginCloseBtn').addEventListener('click', () => {
+                document.getElementById('adminLoginModal').classList.add('hidden');
+            });
+            document.getElementById('saveSettingsBtn').addEventListener('click', handleSaveSettings);
+        });
+
+        // --- IN-BROWSER NOTIFICATION SYSTEM (Replaces alert()) ---
+        function showNotification(message, type = 'info') {
+            const notification = document.createElement('div');
+            notification.className = `fixed top-4 right-4 px-6 py-3 rounded-lg shadow-lg z-50 transition-all duration-300 ${
+                type === 'success' ? 'bg-green-500 text-white' :
+                type === 'error' ? 'bg-red-500 text-white' :
+                type === 'warning' ? 'bg-yellow-500 text-white' :
+                'bg-blue-500 text-white'
+            }`;
+            notification.textContent = message;
+            document.body.appendChild(notification);
+
+            setTimeout(() => {
+                notification.style.opacity = '0';
+                notification.style.transform = 'translateX(100%)';
+                setTimeout(() => {
+                    document.body.removeChild(notification);
+                }, 300);
+            }, 3000);
+        }
+    </script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Kanit:wght@300;400;500;600;700&display=swap');
+        body { font-family: 'Kanit', sans-serif; }
+        .admin-panel, .admin-login-modal { display: none; }
+        .admin-panel.active, .admin-login-modal:not(.hidden) { display: block; }
+    </style>
+</head>
+<body class="bg-gradient-to-br from-pink-50 to-fuchsia-100 min-h-screen font-sans">
+    <!-- Header -->
+    <header class="bg-white/80 backdrop-blur-md shadow-lg sticky top-0 z-10">
+        <div class="container mx-auto px-4 py-6 relative">
+            <div class="flex flex-col sm:flex-row justify-between items-center space-y-4 sm:space-y-0">
+                <!-- Image and Text Content -->
+                <div class="flex items-center space-x-4">
+                    <!-- Image at the top left -->
+                    <img src="https://scontent.fbkk22-4.fna.fbcdn.net/v/t39.30808-6/513483361_1044647674481155_7867707124616084162_n.jpg?_nc_cat=109&ccb=1-7&_nc_sid=6ee11a&_nc_ohc=TkmF8gEVWVoQ7kNvwGvtzA1&_nc_oc=AdlbwtzGxJ2d9SLRnKwGRgpGiZaxbLkRFzgcrMlPVR5jCUWrdGgWvJQhdiMjrkO84OTXtPR_5uKeJJJ73AzSysA9&_nc_zt=23&_nc_ht=scontent.fbkk22-4.fna&_nc_gid=AE6pI67a4MBcd0i6VkVneg&oh=00_Afa0IfYfE_SZvdmNSCzU8DloUaenV6-zEXkQUJsTgTk0QQ&oe=68C338A1"
+                         alt="โลโก้คณะ" 
+                         class="w-16 h-16 rounded-full object-cover shadow-lg flex-shrink-0"
+                         onerror="this.src='https://placehold.co/64x64/e2e8f0/94a3b8?text=โลโก้';">
+                    <div>
+                        <h1 class="text-3xl font-bold text-fuchsia-800">ระบบโหวตเสื้อผ้า</h1>
+                        <p class="text-gray-600">คณะศึกษาศาสตร์</p>
+                    </div>
+                </div>
+                
+                <div class="flex items-center space-x-4">
+                    <span id="userIdDisplay" class="text-sm font-medium text-gray-500"></span>
+                    <button id="adminBtn" class="bg-fuchsia-600 hover:bg-fuchsia-700 text-white px-4 py-2 rounded-lg transition-colors shadow-md">
+                        🔧 จัดการระบบ
+                    </button>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="container mx-auto px-4 py-8">
+        <!-- Voting Status -->
+        <div class="bg-white rounded-xl shadow-lg p-4 mb-8 text-center text-sm font-medium">
+            <div id="votingStatusDisplay">กำลังโหลดสถานะการโหวต...</div>
+        </div>
+
+        <!-- Voting Section -->
+        <div id="votingSection" class="mb-8">
+            <h2 class="text-2xl font-bold text-gray-800 mb-6 text-center">เลือกเสื้อผ้าที่คุณชอบ</h2>
+            <div id="clothesGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                <!-- Clothes items will be loaded here -->
+                <div class="col-span-full text-center text-gray-500">กำลังโหลด...</div>
+            </div>
+        </div>
+
+        <!-- Results Section -->
+        <div class="bg-white rounded-xl shadow-lg p-6 mb-8">
+            <h3 class="text-xl font-bold text-gray-800 mb-4">📊 ผลการโหวต</h3>
+            <div id="resultsContainer">
+                <!-- Results will be displayed here -->
+            </div>
+        </div>
+
+        <!-- Admin Panel -->
+        <div id="adminPanel" class="admin-panel bg-white rounded-xl shadow-lg p-6">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="text-xl font-bold text-gray-800">🔧 ระบบจัดการหลังบ้าน</h3>
+                <button id="adminLogoutBtn" class="bg-gray-200 hover:bg-gray-300 text-gray-800 px-4 py-2 rounded-lg text-sm transition-colors">
+                    ออกจากระบบ
+                </button>
+            </div>
+
+            <!-- Voting Settings Section -->
+            <div class="bg-gray-50 rounded-lg p-4 mb-6">
+                <h4 class="font-semibold text-gray-700 mb-3">การตั้งค่าการโหวต</h4>
+                <div class="flex items-center space-x-2 mb-4">
+                    <input type="checkbox" id="votingEnabled" class="rounded-lg text-fuchsia-600 focus:ring-fuchsia-500">
+                    <label for="votingEnabled" class="text-gray-700">เปิด/ปิดระบบโหวต</label>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <input type="datetime-local" id="startTime" class="border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-fuchsia-500 focus:border-transparent">
+                    <input type="datetime-local" id="endTime" class="border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-fuchsia-500 focus:border-transparent">
+                </div>
+                <button id="saveSettingsBtn" class="mt-3 bg-fuchsia-600 hover:bg-fuchsia-700 text-white px-4 py-2 rounded-lg transition-colors shadow-md">
+                    บันทึกการตั้งค่า
+                </button>
+            </div>
+            
+            <!-- Clothes Management Section -->
+            <div class="bg-gray-50 rounded-lg p-4">
+                <h4 class="font-semibold text-gray-700 mb-3">จัดการเสื้อผ้า</h4>
+
+                <!-- Add New Clothes Form -->
+                <div class="mb-6">
+                    <h5 class="font-medium text-gray-600 mb-2">เพิ่มเสื้อผ้าใหม่</h5>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <input type="text" id="clothesName" placeholder="ชื่อเสื้อผ้า" class="border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-fuchsia-500 focus:border-transparent">
+                        <input type="url" id="clothesImage" placeholder="ลิงก์รูปภาพ" class="border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-fuchsia-500 focus:border-transparent">
+                    </div>
+                    <textarea id="clothesDescription" placeholder="รายละเอียด" class="w-full mt-3 border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-fuchsia-500 focus:border-transparent" rows="3"></textarea>
+                    <button id="addClothesBtn" class="mt-3 bg-pink-600 hover:bg-pink-700 text-white px-4 py-2 rounded-lg transition-colors shadow-md">
+                        ➕ เพิ่มเสื้อผ้า
+                    </button>
+                </div>
+
+                <!-- Manage Existing Clothes -->
+                <div>
+                    <h5 class="font-medium text-gray-600 mb-2">จัดการเสื้อผ้าที่มีอยู่</h5>
+                    <div id="adminClothesGrid" class="grid grid-cols-1 gap-4">
+                        <!-- Admin clothes management will be loaded here -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+    
+    <!-- Admin Login Modal (hidden by default) -->
+    <div id="adminLoginModal" class="fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center p-4 hidden">
+        <div class="bg-white rounded-xl shadow-2xl p-6 w-full max-w-sm">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="text-lg font-bold text-gray-800">ล็อกอินผู้ดูแลระบบ</h3>
+                <button id="adminLoginCloseBtn" class="text-gray-500 hover:text-gray-700">&times;</button>
+            </div>
+            <p class="text-gray-600 text-sm mb-4">โปรดป้อนรหัสผ่านเพื่อเข้าสู่แผงควบคุม</p>
+            <input type="password" id="adminPassword" placeholder="รหัสผ่าน" class="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-fuchsia-500 focus:border-transparent mb-4">
+            <div class="flex justify-end">
+                <button id="adminLoginBtn" class="bg-fuchsia-600 hover:bg-fuchsia-700 text-white px-4 py-2 rounded-lg transition-colors shadow-md">
+                    เข้าสู่ระบบ
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Confirmation Modal (hidden by default) -->
+    <div id="confirmationModal" class="fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center p-4 hidden">
+        <div class="bg-white rounded-xl shadow-2xl p-6 w-full max-w-sm">
+            <p id="modalMessage" class="text-gray-800 text-center mb-6 text-lg font-medium"></p>
+            <div class="flex justify-center space-x-4">
+                <button id="modalConfirmBtn" class="bg-fuchsia-600 hover:bg-fuchsia-700 text-white px-6 py-2 rounded-lg transition-colors">ยืนยัน</button>
+                <button id="modalCancelBtn" class="bg-gray-200 hover:bg-gray-300 text-gray-800 px-6 py-2 rounded-lg transition-colors">ยกเลิก</button>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
